@@ -10,19 +10,25 @@ libs_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "libs")
 if libs_path not in sys.path:
     sys.path.insert(0, libs_path)
 
-# ==================== API 配置区域 ====================
-# 请在此处填写您的 API 配置
-
-API_KEY = "f441b58b15bf473099cc7614e24696d6.4MgeIeAHNLwyiDEk"  # 填入您的 API Key
-BASE_URL = "https://open.bigmodel.cn/api/paas/v4"  # 填入您的 API Base URL
-MODEL_NAME = "glm-5"  # 可根据需要修改模型名称
+# ==================== 模型配置 ====================
+# 支持的模型提供商配置
+MODEL_PROVIDERS = {
+    "智谱 GLM": {
+        "base_url": "https://open.bigmodel.cn/api/paas/v4",
+        "default_model": "glm-4"
+    },
+    "阿里云百炼": {
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "default_model": "qwen-plus"
+    }
+}
 
 MAX_TEXT_LENGTH = 50000
 
 # ====================================================
 
 import tkinter as tk
-from tkinter import filedialog, messagebox, scrolledtext
+from tkinter import filedialog, messagebox, scrolledtext, ttk
 import json
 import threading
 import time
@@ -83,7 +89,7 @@ class MeetingMinutesApp:
     def __init__(self, root):
         self.root = root
         self.root.title("会议纪要生成工具")
-        self.root.geometry("700x780")
+        self.root.geometry("700x880")
         self.root.resizable(True, True)
         
         self.minutes_files: List[str] = []
@@ -91,6 +97,11 @@ class MeetingMinutesApp:
         self.minutes_rules: str = DEFAULT_RULES
         self.is_processing = False
         self.process_mode = tk.StringVar(value="batch")
+        
+        self.model_provider = tk.StringVar(value="智谱 GLM")
+        self.zhipu_api_key = tk.StringVar(value="")
+        self.aliyun_api_key = tk.StringVar(value="")
+        self.model_name = tk.StringVar(value="glm-4")
         
         self._load_config()
         self._create_widgets()
@@ -103,6 +114,10 @@ class MeetingMinutesApp:
                     config = json.load(f)
                     self.minutes_rules = config.get("rules", DEFAULT_RULES)
                     self.minutes_template_path = config.get("template_path", "")
+                    self.model_provider.set(config.get("model_provider", "智谱 GLM"))
+                    self.zhipu_api_key.set(config.get("zhipu_api_key", ""))
+                    self.aliyun_api_key.set(config.get("aliyun_api_key", ""))
+                    self.model_name.set(config.get("model_name", "glm-4"))
             except:
                 pass
     
@@ -111,7 +126,11 @@ class MeetingMinutesApp:
         try:
             config = {
                 "rules": self.minutes_rules,
-                "template_path": self.minutes_template_path
+                "template_path": self.minutes_template_path,
+                "model_provider": self.model_provider.get(),
+                "zhipu_api_key": self.zhipu_api_key.get(),
+                "aliyun_api_key": self.aliyun_api_key.get(),
+                "model_name": self.model_name.get()
             }
             with open(config_path, "w", encoding="utf-8") as f:
                 json.dump(config, f, ensure_ascii=False, indent=2)
@@ -124,6 +143,40 @@ class MeetingMinutesApp:
     def _create_widgets(self):
         main_frame = tk.Frame(self.root, padx=15, pady=15)
         main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        model_frame = tk.LabelFrame(main_frame, text="模型配置", padx=10, pady=10)
+        model_frame.pack(fill=tk.X, pady=(0, 5))
+        
+        provider_frame = tk.Frame(model_frame)
+        provider_frame.pack(fill=tk.X, pady=(0, 5))
+        
+        tk.Label(provider_frame, text="模型提供商:").pack(side=tk.LEFT)
+        self.provider_combo = ttk.Combobox(
+            provider_frame, 
+            textvariable=self.model_provider,
+            values=list(MODEL_PROVIDERS.keys()),
+            state="readonly",
+            width=15
+        )
+        self.provider_combo.pack(side=tk.LEFT, padx=(5, 20))
+        self.provider_combo.bind("<<ComboboxSelected>>", self._on_provider_change)
+        
+        tk.Label(provider_frame, text="模型名称:").pack(side=tk.LEFT)
+        self.model_entry = tk.Entry(provider_frame, textvariable=self.model_name, width=15)
+        self.model_entry.pack(side=tk.LEFT, padx=(5, 0))
+        
+        api_frame = tk.Frame(model_frame)
+        api_frame.pack(fill=tk.X, pady=(5, 0))
+        
+        tk.Label(api_frame, text="智谱 API Key:").pack(side=tk.LEFT)
+        self.zhipu_key_entry = tk.Entry(api_frame, textvariable=self.zhipu_api_key, width=25, show="*")
+        self.zhipu_key_entry.pack(side=tk.LEFT, padx=(5, 20))
+        
+        tk.Label(api_frame, text="阿里云 API Key:").pack(side=tk.LEFT)
+        self.aliyun_key_entry = tk.Entry(api_frame, textvariable=self.aliyun_api_key, width=25, show="*")
+        self.aliyun_key_entry.pack(side=tk.LEFT, padx=(5, 0))
+        
+        self._update_model_fields()
         
         file_frame = tk.LabelFrame(main_frame, text="文件上传区", padx=10, pady=10)
         file_frame.pack(fill=tk.X, pady=(0, 5))
@@ -236,6 +289,19 @@ class MeetingMinutesApp:
         )
         self.minutes_progress.pack(fill=tk.BOTH, expand=True)
     
+    def _on_provider_change(self, event=None):
+        provider = self.model_provider.get()
+        if provider in MODEL_PROVIDERS:
+            self.model_name.set(MODEL_PROVIDERS[provider]["default_model"])
+        self._update_model_fields()
+        self._save_config()
+        self._log(f"已切换模型提供商: {provider}")
+    
+    def _update_model_fields(self):
+        provider = self.model_provider.get()
+        if provider in MODEL_PROVIDERS:
+            self.model_name.set(MODEL_PROVIDERS[provider]["default_model"])
+    
     def _on_mode_change(self):
         mode = self.process_mode.get()
         if mode == "merge":
@@ -331,8 +397,25 @@ class MeetingMinutesApp:
         return agendas
     
     def _generate_minutes_with_llm(self, text: str) -> Optional[Dict]:
-        if not API_KEY or not BASE_URL:
-            self._log("错误: 请先配置 API_KEY 和 BASE_URL")
+        provider = self.model_provider.get()
+        model_name = self.model_name.get()
+        
+        if provider == "智谱 GLM":
+            api_key = self.zhipu_api_key.get()
+            base_url = MODEL_PROVIDERS["智谱 GLM"]["base_url"]
+            if not api_key:
+                self._log("错误: 请先配置智谱 API Key")
+                self.root.after(0, lambda: messagebox.showerror("配置错误", "请先在模型配置区填写智谱 API Key"))
+                return None
+        elif provider == "阿里云百炼":
+            api_key = self.aliyun_api_key.get()
+            base_url = MODEL_PROVIDERS["阿里云百炼"]["base_url"]
+            if not api_key:
+                self._log("错误: 请先配置阿里云 API Key")
+                self.root.after(0, lambda: messagebox.showerror("配置错误", "请先在模型配置区填写阿里云 API Key"))
+                return None
+        else:
+            self._log(f"错误: 未知的模型提供商: {provider}")
             return None
         
         preset_agendas = self._get_preset_agendas()
@@ -379,18 +462,18 @@ class MeetingMinutesApp:
         
         http_client = httpx.Client(timeout=120.0)
         client = OpenAI(
-            api_key=API_KEY, 
-            base_url=BASE_URL,
+            api_key=api_key, 
+            base_url=base_url,
             http_client=http_client
         )
         
         while True:
             try:
-                self._log(f"  正在发送请求，模型版本: {MODEL_NAME}，文本长度: {len(text)} 字符")
-                self._log("  正在调用大模型 API...")
+                self._log(f"  正在调用 {provider} {model_name} 模型...")
+                self._log(f"  文本长度: {len(text)} 字符")
                 
                 response = client.chat.completions.create(
-                    model=MODEL_NAME,
+                    model=model_name,
                     messages=[
                         {"role": "system", "content": "你是一个专业的会议纪要助手，必须严格输出 JSON 格式数据。"},
                         {"role": "user", "content": prompt}
@@ -814,10 +897,17 @@ class MeetingMinutesApp:
             return 0, []
     
     def _start_minutes_generation_thread(self):
-        if not API_KEY or not BASE_URL:
-            self._log("错误: 请先配置 API_KEY 和 BASE_URL")
-            self.root.after(0, lambda: messagebox.showerror("错误", "请先在代码开头配置 API_KEY 和 BASE_URL"))
-            return
+        provider = self.model_provider.get()
+        if provider == "智谱 GLM":
+            if not self.zhipu_api_key.get():
+                self._log("错误: 请先配置智谱 API Key")
+                self.root.after(0, lambda: messagebox.showerror("配置错误", "请先在模型配置区填写智谱 API Key"))
+                return
+        elif provider == "阿里云百炼":
+            if not self.aliyun_api_key.get():
+                self._log("错误: 请先配置阿里云 API Key")
+                self.root.after(0, lambda: messagebox.showerror("配置错误", "请先在模型配置区填写阿里云 API Key"))
+                return
         
         self.minutes_file_btn.config(state=tk.DISABLED)
         self.template_btn.config(state=tk.DISABLED)
